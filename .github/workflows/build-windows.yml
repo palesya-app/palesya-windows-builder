@@ -39,17 +39,30 @@ jobs:
           [System.IO.File]::WriteAllText("source-commit.txt", "$sourceCommit`n", [System.Text.Encoding]::ASCII)
           Write-Host "Building private source commit $sourceCommit"
 
-      - name: Set up Python
+      - name: Set up Python x64
+        id: python-x64
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          architecture: "x64"
           cache: pip
 
       - name: Install build dependencies
         shell: pwsh
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements-dev.txt
+          & "${{ steps.python-x64.outputs.python-path }}" -m pip install --upgrade pip
+          & "${{ steps.python-x64.outputs.python-path }}" -m pip install -r requirements-dev.txt
+
+      - name: Set up Python x86 for legacy RFID bridge
+        id: python-x86
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          architecture: "x86"
+
+      - name: Install x86 bridge build dependency
+        shell: pwsh
+        run: '& "${{ steps.python-x86.outputs.python-path }}" -m pip install "pyinstaller>=6.12,<7"'
 
       - name: Ensure Inno Setup
         shell: pwsh
@@ -66,6 +79,9 @@ jobs:
         shell: pwsh
         env:
           PALESYA_VERSION: ${{ inputs.release_tag || github.ref_name }}
+          PALESYA_MAIN_PYTHON: ${{ steps.python-x64.outputs.python-path }}
+          PALESYA_BRIDGE_PYTHON: ${{ steps.python-x86.outputs.python-path }}
+          PALESYA_REQUIRE_X86_BRIDGE: "1"
         run: .\packaging\build_windows.ps1 -SkipManifest
 
       - name: Smoke test installer and installed application
