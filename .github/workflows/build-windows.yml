@@ -11,7 +11,7 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: palesya-windows-${{ inputs.release_tag || github.ref_name }}
@@ -94,3 +94,20 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 3
+
+      - name: Publish verified public download
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $assets = @("dist\PalesyaSetup.exe", "dist\PalesyaSetup.exe.sha256", "source-commit.txt")
+          gh release view $tag --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag @assets --repo $env:GITHUB_REPOSITORY --clobber
+          } else {
+            gh release create $tag @assets --repo $env:GITHUB_REPOSITORY `
+              --title "Palesya Windows $tag" `
+              --notes "Installer Windows verificato dal commit privato indicato in source-commit.txt."
+          }
