@@ -7,12 +7,14 @@ on:
         description: "Tag privato da compilare (es. v1.2.0-pilot.41)"
         required: true
         type: string
+  push:
+    tags: ["v*"]
 
 permissions:
   contents: read
 
 concurrency:
-  group: palesya-windows-${{ inputs.release_tag }}
+  group: palesya-windows-${{ inputs.release_tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -24,7 +26,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           repository: palesya-app/palesya
-          ref: ${{ inputs.release_tag }}
+          ref: ${{ inputs.release_tag || github.ref_name }}
           ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
           persist-credentials: false
           fetch-depth: 1
@@ -63,13 +65,13 @@ jobs:
       - name: Build Windows installer
         shell: pwsh
         env:
-          PALESYA_VERSION: ${{ inputs.release_tag }}
+          PALESYA_VERSION: ${{ inputs.release_tag || github.ref_name }}
         run: .\packaging\build_windows.ps1 -SkipManifest
 
       - name: Smoke test installer and installed application
         shell: pwsh
         env:
-          PALESYA_VERSION: ${{ inputs.release_tag }}
+          PALESYA_VERSION: ${{ inputs.release_tag || github.ref_name }}
         run: .\scripts\test_windows_payload.ps1 -SkipManifest
 
       - name: Verify artifact source commit
@@ -84,7 +86,7 @@ jobs:
       - name: Upload verified installer
         uses: actions/upload-artifact@v4
         with:
-          name: Palesya-windows-x64-${{ inputs.release_tag }}
+          name: Palesya-windows-x64-${{ inputs.release_tag || github.ref_name }}
           path: |
             dist/PalesyaSetup.exe
             dist/PalesyaSetup.exe.sha256
@@ -92,4 +94,3 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 3
-
