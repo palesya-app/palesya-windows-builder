@@ -9,7 +9,7 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: palesya-linux-${{ inputs.release_tag }}
@@ -127,3 +127,22 @@ jobs:
           compression-level: 0
           retention-days: 3
 
+      - name: Publish verified public Linux download
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          assets=(
+            dist/Palesya-linux-x64.tar.gz
+            dist/Palesya-linux-x64.tar.gz.sha256
+            source-commit.txt
+          )
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$RELEASE_TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" \
+              --title "Palesya Linux $RELEASE_TAG" \
+              --notes "Pacchetto Linux verificato dal commit privato indicato in source-commit.txt."
+          fi
