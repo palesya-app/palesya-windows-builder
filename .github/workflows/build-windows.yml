@@ -127,3 +127,74 @@ jobs:
               --title "Palesya Windows $tag" `
               --notes "Installer Windows verificato dal commit privato indicato in source-commit.txt."
           }
+
+  build-macos:
+    needs: build-windows
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [macos-arm64, macos-x64]
+    # Il runner Mac e self-hosted: la pubblicazione rimane gratuita e il
+    # repository pubblico riceve solo i pacchetti compilati, mai i sorgenti.
+    runs-on: [self-hosted, palesya, macos-arm64]
+    timeout-minutes: 45
+    steps:
+      - name: Checkout private Palesya source
+        uses: actions/checkout@v5
+        with:
+          repository: palesya-app/palesya
+          ref: ${{ inputs.release_tag || github.ref_name }}
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Build verified macOS package
+        env:
+          PALESYA_VERSION: ${{ inputs.release_tag || github.ref_name }}
+          PALESYA_PLATFORM: ${{ matrix.platform }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .release-venv
+          if [ "$PALESYA_PLATFORM" = "macos-x64" ]; then
+            /usr/bin/arch -x86_64 /usr/bin/python3 -m venv .release-venv
+            run_python() { /usr/bin/arch -x86_64 .release-venv/bin/python "$@"; }
+          else
+            /usr/bin/python3 -m venv .release-venv
+            run_python() { .release-venv/bin/python "$@"; }
+          fi
+          run_python -m pip install --upgrade pip
+          run_python -m pip install -r requirements-dev.txt
+          run_python packaging/write_build_info.py
+          run_python -m PyInstaller --noconfirm --clean packaging/Palesya.spec
+          run_python -m PyInstaller --noconfirm --clean packaging/PalesyaUpdater.spec
+          cp dist/PalesyaUpdater dist/Palesya.app/Contents/MacOS/PalesyaUpdater
+          codesign --force --deep --sign - dist/Palesya.app
+          codesign --verify --deep --strict dist/Palesya.app
+          ditto -c -k --sequesterRsrc --keepParent dist/Palesya.app "dist/Palesya-${PALESYA_PLATFORM}.zip"
+          (cd dist && shasum -a 256 "Palesya-${PALESYA_PLATFORM}.zip" > "Palesya-${PALESYA_PLATFORM}.zip.sha256")
+
+      - name: Upload verified macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Palesya-${{ matrix.platform }}-${{ inputs.release_tag || github.ref_name }}
+          path: |
+            dist/Palesya-${{ matrix.platform }}.zip
+            dist/Palesya-${{ matrix.platform }}.zip.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+
+      - name: Publish verified public macOS download
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PALESYA_PLATFORM: ${{ matrix.platform }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          gh release upload "$tag" \
+            "dist/Palesya-${PALESYA_PLATFORM}.zip" \
+            "dist/Palesya-${PALESYA_PLATFORM}.zip.sha256" \
+            --repo "$GITHUB_REPOSITORY" --clobber
