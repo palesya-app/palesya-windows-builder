@@ -129,6 +129,10 @@ jobs:
           }
 
   build-macos:
+    # macOS viene gia compilato, firmato e pubblicato dal workflow privato
+    # Palesya Desktop Release. Il builder pubblico resta dedicato a Windows,
+    # evitando code duplicate sul runner Mac self-hosted.
+    if: ${{ false }}
     needs: build-windows
     strategy:
       fail-fast: false
