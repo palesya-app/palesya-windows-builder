@@ -27,7 +27,7 @@ jobs:
           ref: ${{ inputs.release_tag }}
           ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
           persist-credentials: false
-          fetch-depth: 1
+          fetch-depth: 0
 
       - name: Record private source commit
         shell: bash
@@ -41,6 +41,26 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+
+      - name: Verify closed release train
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          build="${RELEASE_TAG##*.}"
+          case "$RELEASE_TAG:$build" in
+            v1.2.0-pilot.*:*[!0-9]*) echo "Tag release non valido: $RELEASE_TAG" >&2; exit 1 ;;
+            v1.2.0-pilot.*:) echo "Tag release non valido: $RELEASE_TAG" >&2; exit 1 ;;
+            v1.2.0-pilot.*:*) ;;
+            *) echo "Tag release non valido: $RELEASE_TAG" >&2; exit 1 ;;
+          esac
+          if [ "$build" -le 219 ]; then
+            echo "Release storica $RELEASE_TAG: gate non applicabile"
+          else
+            test -f scripts/release_train.py
+            python scripts/release_train.py verify --version "$RELEASE_TAG" --require-tag
+          fi
 
       - name: Install build dependencies
         run: |
