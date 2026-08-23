@@ -28,11 +28,6 @@ jobs:
   build-windows-canary:
     runs-on: windows-latest
     timeout-minutes: 90
-    env:
-      # Il prefisso alfabeticamente precedente a "pilot" fa sì che la release
-      # stabile resti sempre un aggiornamento valido. Nessun manifest canary
-      # viene generato o pubblicato.
-      PALESYA_VERSION: v1.2.0-aicanary.${{ github.run_number }}
     steps:
       - name: Validate immutable canary request
         shell: pwsh
@@ -50,6 +45,12 @@ jobs:
           if ($env:BASE_TAG -notmatch '^v1\.2\.0-pilot\.\d+$') {
             throw "Tag base non valido: $env:BASE_TAG"
           }
+          # La canary estende esattamente la versione stabile installata:
+          # la base corrente non può quindi sovrascriverla durante il collaudo,
+          # mentre la stabile successiva resta un aggiornamento valido.
+          $canaryVersion = "$env:BASE_TAG.canary.${{ github.run_number }}"
+          "PALESYA_VERSION=$canaryVersion" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Versione canary isolata: $canaryVersion"
 
       - name: Checkout private Palesya source
         uses: actions/checkout@v5
@@ -81,6 +82,19 @@ jobs:
           python-version: "3.12"
           architecture: "x64"
           cache: pip
+
+      - name: Verify canary update ordering
+        shell: pwsh
+        env:
+          BASE_TAG: ${{ inputs.base_tag }}
+        run: |
+          $stableNumber = [int](($env:BASE_TAG -split '\.')[-1])
+          $nextStable = $env:BASE_TAG -replace '\.\d+$', ".$(($stableNumber + 1))"
+          & "${{ steps.python-x64.outputs.python-path }}" -c `
+            "import updater; assert not updater.version_is_newer('$env:BASE_TAG', '$env:PALESYA_VERSION'); assert updater.version_is_newer('$nextStable', '$env:PALESYA_VERSION')"
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Ordine versioni canary non sicuro.'
+          }
 
       - name: Verify open Release Train coverage
         shell: pwsh
