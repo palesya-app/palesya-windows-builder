@@ -1,0 +1,171 @@
+name: Build Palesya Windows Canary
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Branch operatore privata da collaudare (ciro/... o lorenzo/...)"
+        required: true
+        type: string
+      expected_source_commit:
+        description: "SHA-1 completo e immutabile del commit autorizzato"
+        required: true
+        type: string
+      base_tag:
+        description: "Ultima release stabile usata per l'audit del Release Train"
+        required: true
+        default: "v1.2.0-pilot.237"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: palesya-windows-canary-${{ inputs.expected_source_commit }}
+  cancel-in-progress: false
+
+jobs:
+  build-windows-canary:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      # Il prefisso alfabeticamente precedente a "pilot" fa sì che la release
+      # stabile resti sempre un aggiornamento valido. Nessun manifest canary
+      # viene generato o pubblicato.
+      PALESYA_VERSION: v1.2.0-aicanary.${{ github.run_number }}
+    steps:
+      - name: Validate immutable canary request
+        shell: pwsh
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+          EXPECTED_SOURCE_COMMIT: ${{ inputs.expected_source_commit }}
+          BASE_TAG: ${{ inputs.base_tag }}
+        run: |
+          if ($env:SOURCE_REF -notmatch '^(ciro|lorenzo)/[0-9A-Za-z._/-]+$') {
+            throw "Ref canary non autorizzato: $env:SOURCE_REF"
+          }
+          if ($env:EXPECTED_SOURCE_COMMIT -notmatch '^[0-9a-fA-F]{40}$') {
+            throw 'Lo SHA sorgente deve contenere esattamente 40 caratteri esadecimali.'
+          }
+          if ($env:BASE_TAG -notmatch '^v1\.2\.0-pilot\.\d+$') {
+            throw "Tag base non valido: $env:BASE_TAG"
+          }
+
+      - name: Checkout private Palesya source
+        uses: actions/checkout@v5
+        with:
+          repository: palesya-app/palesya
+          ref: ${{ inputs.source_ref }}
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Verify exact private source commit
+        shell: pwsh
+        env:
+          EXPECTED_SOURCE_COMMIT: ${{ inputs.expected_source_commit }}
+        run: |
+          $sourceCommit = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          $expected = $env:EXPECTED_SOURCE_COMMIT.Trim().ToLowerInvariant()
+          if ($sourceCommit -ne $expected) {
+            throw "Ref spostato o commit errato. Atteso $expected, trovato $sourceCommit."
+          }
+          "PALESYA_SOURCE_COMMIT=$sourceCommit" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          [System.IO.File]::WriteAllText("source-commit.txt", "$sourceCommit`n", [System.Text.Encoding]::ASCII)
+          Write-Host "Canary vincolato al commit privato $sourceCommit"
+
+      - name: Set up Python x64
+        id: python-x64
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          architecture: "x64"
+          cache: pip
+
+      - name: Verify open Release Train coverage
+        shell: pwsh
+        env:
+          BASE_TAG: ${{ inputs.base_tag }}
+        run: |
+          & "${{ steps.python-x64.outputs.python-path }}" scripts\release_train.py validate
+          if ($LASTEXITCODE -ne 0) { throw 'Schede Release Train non valide.' }
+          & "${{ steps.python-x64.outputs.python-path }}" scripts\release_train.py audit `
+            --base $env:BASE_TAG --head HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Commit canary non interamente coperti dal Release Train.' }
+
+      - name: Install test and build dependencies
+        shell: pwsh
+        run: |
+          & "${{ steps.python-x64.outputs.python-path }}" -m pip install --upgrade pip
+          & "${{ steps.python-x64.outputs.python-path }}" -m pip install -r requirements-dev.txt
+
+      - name: Run complete Windows regression suite
+        shell: pwsh
+        run: |
+          & "${{ steps.python-x64.outputs.python-path }}" -m pytest -q
+          if ($LASTEXITCODE -ne 0) { throw 'Suite Windows non superata.' }
+
+      - name: Set up Python x86 for legacy RFID bridge
+        id: python-x86
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          architecture: "x86"
+
+      - name: Install x86 bridge build dependency
+        shell: pwsh
+        run: '& "${{ steps.python-x86.outputs.python-path }}" -m pip install "pyinstaller>=6.12,<7"'
+
+      - name: Ensure Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --yes --no-progress
+          }
+          if (-not (Test-Path $iscc)) {
+            throw 'Inno Setup 6 non disponibile sul runner.'
+          }
+
+      - name: Build non-public Windows canary
+        shell: pwsh
+        env:
+          PALESYA_MAIN_PYTHON: ${{ steps.python-x64.outputs.python-path }}
+          PALESYA_BRIDGE_PYTHON: ${{ steps.python-x86.outputs.python-path }}
+          PALESYA_REQUIRE_X86_BRIDGE: "1"
+        run: .\packaging\build_windows.ps1 -SkipManifest
+
+      - name: Smoke test installer and installed application
+        shell: pwsh
+        run: .\scripts\test_windows_payload.ps1 -SkipManifest
+
+      - name: Verify artifact provenance and canary isolation
+        shell: pwsh
+        run: |
+          $expected = (Get-Content source-commit.txt -Raw).Trim()
+          $buildInfo = Get-Content packaging\build-info.json -Raw | ConvertFrom-Json
+          if ($buildInfo.source_commit -ne $expected) {
+            throw 'Build info non allineato al commit sorgente.'
+          }
+          if ($buildInfo.version -ne $env:PALESYA_VERSION) {
+            throw 'Versione incorporata non allineata al canary.'
+          }
+          if (Test-Path 'dist\manifest-windows-x64-stable.json') {
+            throw 'Un canary non deve produrre manifest del canale stabile.'
+          }
+          if (-not (Test-Path 'dist\PalesyaSetup.exe.sha256')) {
+            throw 'Checksum installer assente.'
+          }
+
+      - name: Upload temporary verified canary
+        uses: actions/upload-artifact@v4
+        with:
+          name: Palesya-windows-x64-canary-${{ inputs.expected_source_commit }}
+          path: |
+            dist/PalesyaSetup.exe
+            dist/PalesyaSetup.exe.sha256
+            source-commit.txt
+            packaging/build-info.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
