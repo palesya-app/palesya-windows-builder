@@ -98,6 +98,7 @@ jobs:
         run: |
           & "${{ steps.python-x64.outputs.python-path }}" -m pip install --upgrade pip
           & "${{ steps.python-x64.outputs.python-path }}" -m pip install -r requirements-dev.txt
+          & "${{ steps.python-x64.outputs.python-path }}" -m pip install "pytest-timeout>=2.3,<3"
 
       - name: Run complete Windows regression suite
         shell: pwsh
@@ -106,7 +107,7 @@ jobs:
           # sui container Linux Railway e importa fcntl. Tutto il runtime
           # desktop, inclusi i test AI e il Job Object Windows, resta coperto.
           & "${{ steps.python-x64.outputs.python-path }}" -m pytest -q `
-            --ignore=tests/test_cloud_backup.py
+            --ignore=tests/test_cloud_backup.py --timeout=90 --timeout-method=thread
           if ($LASTEXITCODE -ne 0) { throw 'Suite Windows non superata.' }
 
       - name: Set up Python x86 for legacy RFID bridge
