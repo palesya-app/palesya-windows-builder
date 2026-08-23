@@ -100,14 +100,50 @@ jobs:
           & "${{ steps.python-x64.outputs.python-path }}" -m pip install -r requirements-dev.txt
           & "${{ steps.python-x64.outputs.python-path }}" -m pip install "pytest-timeout>=2.3,<3"
 
-      - name: Run complete Windows regression suite
+      - name: Run Windows desktop and local AI regression gate
         shell: pwsh
         run: |
-          # railway_cloud_backup e il servizio off-site eseguito esclusivamente
-          # sui container Linux Railway e importa fcntl. Tutto il runtime
-          # desktop, inclusi i test AI e il Job Object Windows, resta coperto.
+          # La suite completa resta obbligatoria nel CI privato Linux. Qui
+          # eseguiamo il gate nativo Windows sui file desktop toccati e sui
+          # contratti che potrebbero subire regressioni: runtime AI, Job Object,
+          # azioni confermate, firme DB storiche, startup, packaging e updater.
+          # I servizi Railway Linux (fcntl) e i test macOS non sono pertinenti
+          # a questo runner e non devono trasformarsi in falsi negativi.
+          $testFiles = @(
+            'tests/test_local_ai_actions.py',
+            'tests/test_local_ai_assistant.py',
+            'tests/test_local_ai_runtime.py',
+            'tests/test_customer_finance_hubspot.py',
+            'tests/test_affiliations_day_pairings_cash_installments.py',
+            'tests/test_atlantide_operations_feedback.py',
+            'tests/test_client_feedback_flows.py',
+            'tests/test_configurable_planning_and_renewals.py',
+            'tests/test_core_flows.py',
+            'tests/test_default_sports_affiliation.py',
+            'tests/test_fiscal_code_flow.py',
+            'tests/test_functional_audit.py',
+            'tests/test_local_performance.py',
+            'tests/test_new_member_expiry_and_planning.py',
+            'tests/test_new_member_medical_certificate.py',
+            'tests/test_open_access_price_lists.py',
+            'tests/test_operational_onboarding.py',
+            'tests/test_receipts_and_tutorial.py',
+            'tests/test_registration_document_templates.py',
+            'tests/test_registration_fee_due_cancellation_forms.py',
+            'tests/test_secure_print_handoff.py',
+            'tests/test_desktop_shell.py',
+            'tests/test_packaging_contract.py',
+            'tests/test_startup_loader.py',
+            'tests/test_startup_resilience.py',
+            'tests/test_updates.py'
+          )
+          foreach ($testFile in $testFiles) {
+            if (-not (Test-Path $testFile)) {
+              throw "Test Windows obbligatorio assente: $testFile"
+            }
+          }
           & "${{ steps.python-x64.outputs.python-path }}" -m pytest -q `
-            --ignore=tests/test_cloud_backup.py --timeout=90 --timeout-method=thread
+            @testFiles --timeout=90 --timeout-method=thread --durations=20
           if ($LASTEXITCODE -ne 0) { throw 'Suite Windows non superata.' }
 
       - name: Set up Python x86 for legacy RFID bridge
