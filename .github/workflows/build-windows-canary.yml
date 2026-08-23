@@ -50,6 +50,8 @@ jobs:
           # mentre la stabile successiva resta un aggiornamento valido.
           $canaryVersion = "$env:BASE_TAG.canary.${{ github.run_number }}"
           "PALESYA_VERSION=$canaryVersion" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PALESYA_CANARY_BUILD=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PALESYA_CANARY_BASE_TAG=$env:BASE_TAG" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "Versione canary isolata: $canaryVersion"
 
       - name: Checkout private Palesya source
