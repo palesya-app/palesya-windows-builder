@@ -102,7 +102,11 @@ jobs:
       - name: Run complete Windows regression suite
         shell: pwsh
         run: |
-          & "${{ steps.python-x64.outputs.python-path }}" -m pytest -q
+          # railway_cloud_backup e il servizio off-site eseguito esclusivamente
+          # sui container Linux Railway e importa fcntl. Tutto il runtime
+          # desktop, inclusi i test AI e il Job Object Windows, resta coperto.
+          & "${{ steps.python-x64.outputs.python-path }}" -m pytest -q `
+            --ignore=tests/test_cloud_backup.py
           if ($LASTEXITCODE -ne 0) { throw 'Suite Windows non superata.' }
 
       - name: Set up Python x86 for legacy RFID bridge
