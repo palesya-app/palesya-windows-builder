@@ -83,19 +83,6 @@ jobs:
           architecture: "x64"
           cache: pip
 
-      - name: Verify canary update ordering
-        shell: pwsh
-        env:
-          BASE_TAG: ${{ inputs.base_tag }}
-        run: |
-          $stableNumber = [int](($env:BASE_TAG -split '\.')[-1])
-          $nextStable = $env:BASE_TAG -replace '\.\d+$', ".$(($stableNumber + 1))"
-          & "${{ steps.python-x64.outputs.python-path }}" -c `
-            "import updater; assert not updater.version_is_newer('$env:BASE_TAG', '$env:PALESYA_VERSION'); assert updater.version_is_newer('$nextStable', '$env:PALESYA_VERSION')"
-          if ($LASTEXITCODE -ne 0) {
-            throw 'Ordine versioni canary non sicuro.'
-          }
-
       - name: Verify open Release Train coverage
         shell: pwsh
         env:
@@ -113,6 +100,19 @@ jobs:
           & "${{ steps.python-x64.outputs.python-path }}" -m pip install --upgrade pip
           & "${{ steps.python-x64.outputs.python-path }}" -m pip install -r requirements-dev.txt
           & "${{ steps.python-x64.outputs.python-path }}" -m pip install "pytest-timeout>=2.3,<3"
+
+      - name: Verify canary update ordering
+        shell: pwsh
+        env:
+          BASE_TAG: ${{ inputs.base_tag }}
+        run: |
+          $stableNumber = [int](($env:BASE_TAG -split '\.')[-1])
+          $nextStable = $env:BASE_TAG -replace '\.\d+$', ".$(($stableNumber + 1))"
+          & "${{ steps.python-x64.outputs.python-path }}" -c `
+            "import updater; assert not updater.version_is_newer('$env:BASE_TAG', '$env:PALESYA_VERSION'); assert updater.version_is_newer('$nextStable', '$env:PALESYA_VERSION')"
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Ordine versioni canary non sicuro.'
+          }
 
       - name: Run Windows desktop and local AI regression gate
         shell: pwsh
