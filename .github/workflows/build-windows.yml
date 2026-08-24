@@ -31,15 +31,6 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      - name: Preserve source bytes across Windows checkout
-        shell: pwsh
-        run: |
-          # Release plans hash versioned contracts byte-for-byte. Rehydrate the
-          # index with conversions disabled so CRLF defaults on Windows cannot
-          # alter a source file after its immutable tag has been verified.
-          git config core.autocrlf false
-          git checkout-index --force --all
-
       - name: Record private source commit
         shell: pwsh
         run: |
@@ -55,6 +46,15 @@ jobs:
           python-version: "3.12"
           architecture: "x64"
           cache: pip
+
+      - name: Preserve release contract bytes across Windows checkout
+        shell: pwsh
+        run: |
+          # Read the immutable blob directly from Git and write its raw bytes.
+          # This avoids CRLF working-tree conversion without weakening the hash.
+          & "${{ steps.python-x64.outputs.python-path }}" -c "import pathlib, subprocess; pathlib.Path(r'release-train/regression-contract.json').write_bytes(subprocess.check_output(['git', 'show', 'HEAD:release-train/regression-contract.json']))"
+          if ($LASTEXITCODE -ne 0) { throw 'Ripristino byte contratto non riuscito' }
+          Get-FileHash release-train\regression-contract.json -Algorithm SHA256
 
       - name: Verify closed release train
         shell: pwsh
