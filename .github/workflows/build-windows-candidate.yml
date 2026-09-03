@@ -1,0 +1,261 @@
+name: Build Palesya Windows Candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Tag canonico chiuso da collaudare, senza pubblicazione"
+        required: true
+        type: string
+      expected_source_commit:
+        description: "SHA-1 completo e immutabile del commit autorizzato"
+        required: true
+        type: string
+      base_tag:
+        description: "Ultima release stabile usata per l'audit del Release Train"
+        required: true
+        default: "v1.2.0-pilot.256"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: palesya-windows-candidate-${{ inputs.expected_source_commit }}
+  cancel-in-progress: false
+
+jobs:
+  build-windows-candidate:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - name: Validate immutable candidate request
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          EXPECTED_SOURCE_COMMIT: ${{ inputs.expected_source_commit }}
+          BASE_TAG: ${{ inputs.base_tag }}
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v1\.2\.0-pilot\.\d+$') {
+            throw "Ref candidate non autorizzato: $env:RELEASE_TAG"
+          }
+          if ($env:EXPECTED_SOURCE_COMMIT -notmatch '^[0-9a-fA-F]{40}$') {
+            throw 'Lo SHA sorgente deve contenere esattamente 40 caratteri esadecimali.'
+          }
+          if ($env:BASE_TAG -notmatch '^v1\.2\.0-pilot\.\d+$') {
+            throw "Tag base non valido: $env:BASE_TAG"
+          }
+          # Solo piano e tag canonici chiusi. Nessuna release pubblica o manifest.
+          "PALESYA_VERSION=$env:RELEASE_TAG" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Versione candidata isolata: $env:RELEASE_TAG"
+
+      - name: Checkout private Palesya source
+        uses: actions/checkout@v5
+        with:
+          repository: palesya-app/palesya
+          ref: ${{ inputs.release_tag }}
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Verify exact private source commit
+        shell: pwsh
+        env:
+          EXPECTED_SOURCE_COMMIT: ${{ inputs.expected_source_commit }}
+        run: |
+          $sourceCommit = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          $expected = $env:EXPECTED_SOURCE_COMMIT.Trim().ToLowerInvariant()
+          if ($sourceCommit -ne $expected) {
+            throw "Ref spostato o commit errato. Atteso $expected, trovato $sourceCommit."
+          }
+          "PALESYA_SOURCE_COMMIT=$sourceCommit" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          [System.IO.File]::WriteAllText("source-commit.txt", "$sourceCommit`n", [System.Text.Encoding]::ASCII)
+          Write-Host "Candidate vincolato al commit privato $sourceCommit"
+
+      - name: Set up Python x64
+        id: python-x64
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          architecture: "x64"
+          cache: pip
+
+      - name: Verify closed Release Train and commit coverage
+        shell: pwsh
+        env:
+          BASE_TAG: ${{ inputs.base_tag }}
+        run: |
+          & "${{ steps.python-x64.outputs.python-path }}" scripts\release_train.py validate
+          if ($LASTEXITCODE -ne 0) { throw 'Schede Release Train non valide.' }
+          & "${{ steps.python-x64.outputs.python-path }}" scripts\release_train.py verify --version $env:PALESYA_VERSION --require-tag
+          if ($LASTEXITCODE -ne 0) { throw 'Piano/tag canonico non verificato.' }
+          & "${{ steps.python-x64.outputs.python-path }}" scripts\release_train.py audit `
+            --base $env:BASE_TAG --head HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Commit candidate non interamente coperti dal Release Train.' }
+
+      - name: Install test and build dependencies
+        shell: pwsh
+        run: |
+          & "${{ steps.python-x64.outputs.python-path }}" -m pip install --upgrade pip
+          if ($LASTEXITCODE -ne 0) { throw 'Pip non aggiornato.' }
+          & "${{ steps.python-x64.outputs.python-path }}" -m pip install -r requirements-dev.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Dipendenze non installate.' }
+          & "${{ steps.python-x64.outputs.python-path }}" -m pip install "pytest-timeout>=2.3,<3"
+          if ($LASTEXITCODE -ne 0) { throw 'Timeout test non installato.' }
+
+      - name: Verify candidate update ordering
+        shell: pwsh
+        env:
+          BASE_TAG: ${{ inputs.base_tag }}
+        run: |
+          & "${{ steps.python-x64.outputs.python-path }}" -c `
+            "import updater; assert not updater.version_is_newer('$env:BASE_TAG', '$env:PALESYA_VERSION'); assert updater.version_is_newer('$env:PALESYA_VERSION', '$env:BASE_TAG')"
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Ordine versioni candidate non sicuro.'
+          }
+
+      - name: Install document converter on the disposable test runner
+        shell: pwsh
+        run: |
+          choco install libreoffice-fresh --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'Convertitore di test Windows non installato.' }
+          & "${{ steps.python-x64.outputs.python-path }}" -c "import rtf_document_fidelity as r; assert r.find_converter(), 'Convertitore RTF Windows non rilevato'"
+          if ($LASTEXITCODE -ne 0) { throw 'Il collaudo documenti non puo essere saltato.' }
+
+      - name: Run Windows desktop and local AI regression gate
+        shell: pwsh
+        run: |
+          # La suite completa resta obbligatoria nel CI privato. Qui
+          # eseguiamo il gate nativo Windows sui file desktop toccati e sui
+          # contratti che potrebbero subire regressioni: runtime AI, Job Object,
+          # confini di sicurezza, firme DB storiche, startup, packaging e updater.
+          # I servizi Railway Linux (fcntl) e i test macOS non sono pertinenti
+          # a questo runner e non devono trasformarsi in falsi negativi.
+          $testFiles = @(
+            'tests/test_local_ai_agent_safety.py',
+            'tests/test_local_ai_assistant.py',
+            'tests/test_local_ai_runtime.py',
+            'tests/test_customer_finance_hubspot.py',
+            'tests/test_affiliations_day_pairings_cash_installments.py',
+            'tests/test_atlantide_operations_feedback.py',
+            'tests/test_client_feedback_flows.py',
+            'tests/test_configurable_planning_and_renewals.py',
+            'tests/test_planning_activity_name_compatibility.py',
+            'tests/test_planning_midnight_presence.py',
+            'tests/test_planning_subscription_lifecycle.py',
+            'tests/test_exact_shared_packages.py',
+            'tests/test_aquatic_release_plan.py',
+            'tests/test_access_subscription_selection.py',
+            'tests/test_current_member_status.py',
+            'tests/test_staff_shifts_and_permissions.py',
+            'tests/test_support_catalog_onboarding.py',
+            'tests/test_document_fidelity.py',
+            'tests/regression_contracts/test_catalog_search_and_receipt_email.py',
+            'tests/regression_contracts/test_registration_fee_paid_visibility.py',
+            'tests/test_core_flows.py',
+            'tests/test_default_sports_affiliation.py',
+            'tests/test_fiscal_code_flow.py',
+            'tests/test_functional_audit.py',
+            'tests/test_local_performance.py',
+            'tests/test_new_member_expiry_and_planning.py',
+            'tests/test_new_member_medical_certificate.py',
+            'tests/test_open_access_price_lists.py',
+            'tests/test_operational_onboarding.py',
+            'tests/test_receipts_and_tutorial.py',
+            'tests/test_registration_document_templates.py',
+            'tests/test_registration_fee_due_cancellation_forms.py',
+            'tests/test_secure_print_handoff.py',
+            'tests/test_desktop_shell.py',
+            'tests/test_packaging_contract.py',
+            'tests/test_windows_build_fail_closed.py',
+            'tests/test_startup_loader.py',
+            'tests/test_startup_resilience.py',
+            'tests/test_updates.py'
+          )
+          # Le azioni AI sono una capability di branch, non un prerequisito
+          # della release stabile. Non abilitarle per compilare un candidate.
+          # Se il modulo esiste, il relativo test resta obbligatorio.
+          $actionsTest = 'tests/test_local_ai_actions.py'
+          if ((Test-Path 'local_ai_actions.py') -and -not (Test-Path $actionsTest)) {
+            throw "Modulo azioni AI presente senza contratto: $actionsTest"
+          }
+          if (Test-Path $actionsTest) { $testFiles += $actionsTest }
+          foreach ($testFile in $testFiles) {
+            if (-not (Test-Path $testFile)) {
+              throw "Test Windows obbligatorio assente: $testFile"
+            }
+          }
+          & "${{ steps.python-x64.outputs.python-path }}" -m pytest -q `
+            @testFiles --timeout=90 --timeout-method=thread --durations=20
+          if ($LASTEXITCODE -ne 0) { throw 'Suite Windows non superata.' }
+
+      - name: Set up Python x86 for legacy RFID bridge
+        id: python-x86
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          architecture: "x86"
+
+      - name: Install x86 bridge build dependency
+        shell: pwsh
+        run: |
+          & "${{ steps.python-x86.outputs.python-path }}" -m pip install "pyinstaller>=6.12,<7"
+          if ($LASTEXITCODE -ne 0) { throw 'PyInstaller x86 non installato.' }
+
+      - name: Ensure Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'Installazione Inno Setup fallita.' }
+          }
+          if (-not (Test-Path $iscc)) {
+            throw 'Inno Setup 6 non disponibile sul runner.'
+          }
+
+      - name: Build non-public Windows candidate
+        shell: pwsh
+        env:
+          PALESYA_MAIN_PYTHON: ${{ steps.python-x64.outputs.python-path }}
+          PALESYA_BRIDGE_PYTHON: ${{ steps.python-x86.outputs.python-path }}
+          PALESYA_REQUIRE_X86_BRIDGE: "1"
+        run: .\packaging\build_windows.ps1 -SkipManifest
+
+      - name: Smoke test installer and installed application
+        shell: pwsh
+        run: .\scripts\test_windows_payload.ps1 -SkipManifest
+
+      - name: Verify artifact provenance and candidate isolation
+        shell: pwsh
+        run: |
+          $expected = (Get-Content source-commit.txt -Raw).Trim()
+          $buildInfo = Get-Content packaging\build-info.json -Raw | ConvertFrom-Json
+          if ($buildInfo.source_commit -ne $expected) {
+            throw 'Build info non allineato al commit sorgente.'
+          }
+          if ($buildInfo.version -ne $env:PALESYA_VERSION) {
+            throw 'Versione incorporata non allineata al candidate.'
+          }
+          if (Test-Path 'dist\manifest-windows-x64-stable.json') {
+            throw 'Un candidate non deve produrre manifest del canale stabile.'
+          }
+          if (-not (Test-Path 'dist\PalesyaSetup.exe.sha256')) {
+            throw 'Checksum installer assente.'
+          }
+          $actualHash = (Get-FileHash 'dist\PalesyaSetup.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $recordedHash = ((Get-Content 'dist\PalesyaSetup.exe.sha256' -Raw).Trim() -split '\s+')[0]
+          if ($actualHash -ne $recordedHash) { throw 'Checksum installer non corrispondente.' }
+
+      - name: Upload temporary verified candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: Palesya-windows-x64-candidate-${{ inputs.expected_source_commit }}
+          path: |
+            dist/PalesyaSetup.exe
+            dist/PalesyaSetup.exe.sha256
+            source-commit.txt
+            packaging/build-info.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
