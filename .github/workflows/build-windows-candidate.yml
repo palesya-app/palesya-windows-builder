@@ -80,6 +80,15 @@ jobs:
           architecture: "x64"
           cache: pip
 
+      - name: Preserve release contract bytes across Windows checkout
+        shell: pwsh
+        run: |
+          # Same immutable-byte check as the production builder. Never rewrite
+          # the expected hash to accommodate automatic CRLF conversion.
+          & "${{ steps.python-x64.outputs.python-path }}" -c "import pathlib, subprocess; pathlib.Path(r'release-train/regression-contract.json').write_bytes(subprocess.check_output(['git', 'show', 'HEAD:release-train/regression-contract.json']))"
+          if ($LASTEXITCODE -ne 0) { throw 'Ripristino byte contratto non riuscito' }
+          Get-FileHash release-train\regression-contract.json -Algorithm SHA256
+
       - name: Verify closed Release Train and commit coverage
         shell: pwsh
         env:
