@@ -114,6 +114,14 @@ jobs:
             throw 'Ordine versioni canary non sicuro.'
           }
 
+      - name: Install document converter on the disposable test runner
+        shell: pwsh
+        run: |
+          choco install libreoffice-fresh --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'Convertitore di test Windows non installato.' }
+          & "${{ steps.python-x64.outputs.python-path }}" -c "import rtf_document_fidelity as r; assert r.find_converter(), 'Convertitore RTF Windows non rilevato'"
+          if ($LASTEXITCODE -ne 0) { throw 'Il collaudo documenti non puo essere saltato.' }
+
       - name: Run Windows desktop and local AI regression gate
         shell: pwsh
         run: |
@@ -134,6 +142,16 @@ jobs:
             'tests/test_configurable_planning_and_renewals.py',
             'tests/test_planning_activity_name_compatibility.py',
             'tests/test_planning_midnight_presence.py',
+            'tests/test_planning_subscription_lifecycle.py',
+            'tests/test_exact_shared_packages.py',
+            'tests/test_aquatic_release_plan.py',
+            'tests/test_access_subscription_selection.py',
+            'tests/test_current_member_status.py',
+            'tests/test_staff_shifts_and_permissions.py',
+            'tests/test_support_catalog_onboarding.py',
+            'tests/test_document_fidelity.py',
+            'tests/regression_contracts/test_catalog_search_and_receipt_email.py',
+            'tests/regression_contracts/test_registration_fee_paid_visibility.py',
             'tests/test_core_flows.py',
             'tests/test_default_sports_affiliation.py',
             'tests/test_fiscal_code_flow.py',
