@@ -14,7 +14,7 @@ on:
       base_tag:
         description: "Ultima release stabile usata per l'audit del Release Train"
         required: true
-        default: "v1.2.0-pilot.237"
+        default: "v1.2.0-pilot.256"
         type: string
 
 permissions:
@@ -117,14 +117,14 @@ jobs:
       - name: Run Windows desktop and local AI regression gate
         shell: pwsh
         run: |
-          # La suite completa resta obbligatoria nel CI privato Linux. Qui
+          # La suite completa resta obbligatoria nel CI privato. Qui
           # eseguiamo il gate nativo Windows sui file desktop toccati e sui
           # contratti che potrebbero subire regressioni: runtime AI, Job Object,
-          # azioni confermate, firme DB storiche, startup, packaging e updater.
+          # confini di sicurezza, firme DB storiche, startup, packaging e updater.
           # I servizi Railway Linux (fcntl) e i test macOS non sono pertinenti
           # a questo runner e non devono trasformarsi in falsi negativi.
           $testFiles = @(
-            'tests/test_local_ai_actions.py',
+            'tests/test_local_ai_agent_safety.py',
             'tests/test_local_ai_assistant.py',
             'tests/test_local_ai_runtime.py',
             'tests/test_customer_finance_hubspot.py',
@@ -132,6 +132,8 @@ jobs:
             'tests/test_atlantide_operations_feedback.py',
             'tests/test_client_feedback_flows.py',
             'tests/test_configurable_planning_and_renewals.py',
+            'tests/test_planning_activity_name_compatibility.py',
+            'tests/test_planning_midnight_presence.py',
             'tests/test_core_flows.py',
             'tests/test_default_sports_affiliation.py',
             'tests/test_fiscal_code_flow.py',
@@ -151,6 +153,14 @@ jobs:
             'tests/test_startup_resilience.py',
             'tests/test_updates.py'
           )
+          # Le azioni AI sono una capability di branch, non un prerequisito
+          # della release stabile. Non abilitarle per compilare un canary.
+          # Se il modulo esiste, il relativo test resta obbligatorio.
+          $actionsTest = 'tests/test_local_ai_actions.py'
+          if ((Test-Path 'local_ai_actions.py') -and -not (Test-Path $actionsTest)) {
+            throw "Modulo azioni AI presente senza contratto: $actionsTest"
+          }
+          if (Test-Path $actionsTest) { $testFiles += $actionsTest }
           foreach ($testFile in $testFiles) {
             if (-not (Test-Path $testFile)) {
               throw "Test Windows obbligatorio assente: $testFile"
