@@ -163,6 +163,7 @@ jobs:
             'tests/regression_contracts/test_registration_fee_paid_visibility.py',
             'tests/test_core_flows.py',
             'tests/test_default_sports_affiliation.py',
+            'tests/test_family_member_duplicates.py',
             'tests/test_fiscal_code_flow.py',
             'tests/test_functional_audit.py',
             'tests/test_local_performance.py',
