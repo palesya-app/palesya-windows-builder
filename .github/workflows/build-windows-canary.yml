@@ -222,6 +222,8 @@ jobs:
 
       - name: Smoke test installer and installed application
         shell: pwsh
+        env:
+          PALESYA_MAIN_PYTHON: ${{ steps.python-x64.outputs.python-path }}
         run: .\scripts\test_windows_payload.ps1 -SkipManifest
 
       - name: Verify artifact provenance and canary isolation
