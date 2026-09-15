@@ -124,3 +124,97 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Caricamento RTF TOM non superato (exit $LASTEXITCODE)."
           }
+
+      - name: Locate full native print blocking boundary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Service -Name Spooler -StartupType Manual
+          Start-Service -Name Spooler
+          $printerName = 'Palesya Native Print Diagnostic'
+          $outputPath = Join-Path $env:RUNNER_TEMP 'palesya-native-print-diagnostic.prn'
+          $driver = Get-PrinterDriver | Where-Object Name -eq 'Microsoft Print To PDF' | Select-Object -First 1
+          if (-not $driver) { throw 'Microsoft Print To PDF non disponibile.' }
+          Remove-Item -LiteralPath $outputPath -Force -ErrorAction SilentlyContinue
+          Add-PrinterPort -Name $outputPath
+          Add-Printer -Name $printerName -DriverName $driver.Name -PortName $outputPath
+          try {
+            & rundll32.exe printui.dll,PrintUIEntry /y /n $printerName
+            $code = @'
+          import ctypes
+          import os
+          import threading
+          from ctypes import wintypes
+
+          import native_registration_print as native_print
+
+          def abort_hung_print():
+              print("Windows full native print TIMEOUT", flush=True)
+              os._exit(124)
+
+          timeout = threading.Timer(90, abort_hung_print)
+          timeout.daemon = True
+          timeout.start()
+          real_windll = ctypes.WinDLL
+          real_load_rtf = native_print._load_rtf_with_windows_tom
+          native_comdlg32 = real_windll("comdlg32", use_last_error=True)
+          native_print_dialog = native_comdlg32.PrintDlgW
+          native_print_dialog.argtypes = [ctypes.c_void_p]
+          native_print_dialog.restype = wintypes.BOOL
+
+          def logged_load_rtf(*args, **kwargs):
+              print("Windows full native print: TOM START", flush=True)
+              result = real_load_rtf(*args, **kwargs)
+              print("Windows full native print: TOM PASS", flush=True)
+              return result
+
+          def print_dialog_without_ui(pointer):
+              print_dialog = getattr(pointer, "_obj", None)
+              if print_dialog is None:
+                  raise RuntimeError("PRINTDLG pointer non verificabile")
+              print_dialog.Flags |= 0x00000400
+              print("Windows full native print: PrintDlg START", flush=True)
+              result = native_print_dialog(pointer)
+              print("Windows full native print: PrintDlg PASS", flush=True)
+              return result
+
+          print_dialog_without_ui.argtypes = None
+          print_dialog_without_ui.restype = None
+
+          class Comdlg32Proxy:
+              def __getattr__(self, name):
+                  if name == "PrintDlgW":
+                      return print_dialog_without_ui
+                  return getattr(native_comdlg32, name)
+
+          def diagnostic_windll(name, *args, **kwargs):
+              if str(name).casefold() in {"comdlg32", "comdlg32.dll"}:
+                  return Comdlg32Proxy()
+              return real_windll(name, *args, **kwargs)
+
+          ctypes.WinDLL = diagnostic_windll
+          native_print._load_rtf_with_windows_tom = logged_load_rtf
+          payload = (
+              br"{\rtf1\ansi\deff0{\fonttbl{\f0 Arial;}}"
+              br"\paperw8391\paperh11907\margl720\margr720\margt720\margb720"
+              br"\fs24 Domanda di iscrizione Palesya\par}"
+          )
+          try:
+              print("Windows full native print START", flush=True)
+              result = native_print._print_rtf_with_windows(payload)
+              print(f"Windows full native print PASS: {result}", flush=True)
+          finally:
+              timeout.cancel()
+              ctypes.WinDLL = real_windll
+              native_print._load_rtf_with_windows_tom = real_load_rtf
+          '@
+            & "${{ steps.python-x64.outputs.python-path }}" -c $code
+            if ($LASTEXITCODE -ne 0) {
+              throw "Stampa nativa diagnostica non superata (exit $LASTEXITCODE)."
+            }
+          }
+          finally {
+            Remove-Printer -Name $printerName -ErrorAction SilentlyContinue
+            Remove-PrinterPort -Name $outputPath -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $outputPath -Force -ErrorAction SilentlyContinue
+          }
