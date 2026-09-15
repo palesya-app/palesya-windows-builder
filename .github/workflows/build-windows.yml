@@ -257,20 +257,22 @@ jobs:
           $qaScript = 'scripts/test_windows_ai_priority.ci.py'
           $source = [System.IO.File]::ReadAllText('scripts/test_windows_ai_priority.py')
           $needle = '            assert state()["eligibility_code"] != "BUSY", state()'
-          $replacement = @'
-            initial_state = state()
-            initial_deadline = time.monotonic() + 330
-            while initial_state["eligibility_code"] == "BUSY":
-                assert set(initial_state.get("blockers") or []) == {"backup"}, initial_state
-                assert time.monotonic() < initial_deadline, initial_state
-                time.sleep(1)
-                initial_state = state()
-            assert initial_state["eligibility_code"] != "BUSY", initial_state
-          '@
+          $replacement = @(
+            '            initial_state = state()'
+            '            initial_deadline = time.monotonic() + 330'
+            '            while initial_state["eligibility_code"] == "BUSY":'
+            '                assert set(initial_state.get("blockers") or []) == {"backup"}, initial_state'
+            '                assert time.monotonic() < initial_deadline, initial_state'
+            '                time.sleep(1)'
+            '                initial_state = state()'
+            '            assert initial_state["eligibility_code"] != "BUSY", initial_state'
+          ) -join [Environment]::NewLine
           $regex = [regex]::new([regex]::Escape($needle))
           $patched = $regex.Replace($source, $replacement, 1)
           if ($patched -eq $source) { throw 'Punto di attesa backup QA non trovato.' }
           [System.IO.File]::WriteAllText($qaScript, $patched, [System.Text.Encoding]::UTF8)
+          & "${{ steps.python-x64.outputs.python-path }}" -m py_compile $qaScript
+          if ($LASTEXITCODE -ne 0) { throw 'Script QA AI generato con sintassi non valida.' }
           try {
             $result = & "${{ steps.python-x64.outputs.python-path }}" -c "import os,runpy; os.environ['GITHUB_REPOSITORY']='palesya-app/palesya'; runpy.run_path(r'$qaScript', run_name='__main__')" 2>&1
             $testExitCode = $LASTEXITCODE
