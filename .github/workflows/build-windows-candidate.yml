@@ -395,6 +395,16 @@ jobs:
           $controlPatched = $controlRegex.Replace($patched, $controlReplacement, 1)
           if ($controlPatched -eq $patched) { throw 'Controllo installazione AI stabile non trovato.' }
           $patched = $controlPatched
+          $orphanNeedle = '                page.get_by_role("button", name="Rileva di nuovo", exact=True).click()'
+          $orphanReplacement = @(
+            '                orphan.mkdir(parents=True, exist_ok=True)'
+            '                os.utime(orphan, (1, 1))'
+            '                page.get_by_role("button", name="Rileva di nuovo", exact=True).click()'
+          ) -join [Environment]::NewLine
+          $orphanRegex = [regex]::new([regex]::Escape($orphanNeedle))
+          $orphanPatched = $orphanRegex.Replace($patched, $orphanReplacement, 1)
+          if ($orphanPatched -eq $patched) { throw 'Controllo read-only del workspace backup non trovato.' }
+          $patched = $orphanPatched
           [System.IO.File]::WriteAllText($qaScript, $patched, [System.Text.Encoding]::UTF8)
           & "${{ steps.python-x64.outputs.python-path }}" -m py_compile $qaScript
           if ($LASTEXITCODE -ne 0) { throw 'Script QA AI generato con sintassi non valida.' }
