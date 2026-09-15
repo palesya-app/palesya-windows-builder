@@ -345,12 +345,18 @@ jobs:
           '@
             & "${{ steps.python-x64.outputs.python-path }}" -c $code
             if ($LASTEXITCODE -ne 0) { throw 'Stampa RTF nativa Windows non superata.' }
-            $deadline = (Get-Date).AddSeconds(20)
-            while ((Get-Date) -lt $deadline -and -not (Test-Path $outputPath)) {
+            $deadline = (Get-Date).AddSeconds(30)
+            $printedLength = 0
+            while ((Get-Date) -lt $deadline) {
+              if (Test-Path $outputPath) {
+                $printedLength = (Get-Item $outputPath).Length
+                if ($printedLength -gt 0) { break }
+              }
               Start-Sleep -Milliseconds 250
             }
             if (-not (Test-Path $outputPath)) { throw 'Il driver Windows non ha prodotto il documento di collaudo.' }
-            if ((Get-Item $outputPath).Length -le 0) { throw 'Documento di collaudo stampa vuoto.' }
+            if ($printedLength -le 0) { throw 'Lo spooler non ha completato il documento di collaudo.' }
+            Write-Host "Windows native RTF spooler PASS ($printedLength bytes)"
           }
           finally {
             Remove-Printer -Name $printerName -ErrorAction SilentlyContinue
