@@ -81,6 +81,7 @@ jobs:
         run: |
           & "${{ steps.python-x64.outputs.python-path }}" -m pip install --upgrade pip
           & "${{ steps.python-x64.outputs.python-path }}" -m pip install -r requirements-dev.txt
+          & "${{ steps.python-x64.outputs.python-path }}" -m pip install "playwright>=1.55,<2"
 
       - name: Set up Python x86 for legacy RFID bridge
         id: python-x86
