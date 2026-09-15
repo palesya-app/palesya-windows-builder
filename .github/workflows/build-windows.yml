@@ -20,7 +20,7 @@ concurrency:
 jobs:
   build-windows:
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Checkout private Palesya source
         uses: actions/checkout@v5
@@ -119,6 +119,120 @@ jobs:
           PALESYA_VERSION: ${{ inputs.release_tag || github.ref_name }}
           PALESYA_MAIN_PYTHON: ${{ steps.python-x64.outputs.python-path }}
         run: .\scripts\test_windows_payload.ps1 -SkipManifest
+
+      - name: Exercise native RTF printing on disposable Windows printer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Service -Name Spooler -StartupType Manual
+          Start-Service -Name Spooler
+          $printerName = 'Palesya Native Print QA'
+          $outputPath = Join-Path $env:RUNNER_TEMP 'palesya-native-registration-print.prn'
+          $driver = Get-PrinterDriver | Where-Object Name -eq 'Microsoft Print To PDF' | Select-Object -First 1
+          if (-not $driver) {
+            $driver = Get-PrinterDriver | Where-Object Name -eq 'Generic / Text Only' | Select-Object -First 1
+          }
+          if (-not $driver) { throw 'Nessun driver di stampa Windows verificabile disponibile.' }
+          Remove-Item -LiteralPath $outputPath -Force -ErrorAction SilentlyContinue
+          Add-PrinterPort -Name $outputPath
+          Add-Printer -Name $printerName -DriverName $driver.Name -PortName $outputPath
+          try {
+            & rundll32.exe printui.dll,PrintUIEntry /y /n $printerName
+            $code = @'
+          import ctypes
+          import threading
+          import time
+          from ctypes import wintypes
+          import native_registration_print as native_print
+
+          user32 = ctypes.WinDLL("user32", use_last_error=True)
+          ENUM_WINDOWS = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+          BM_CLICK = 0x00F5
+          clicked = threading.Event()
+
+          user32.EnumWindows.argtypes = [ENUM_WINDOWS, wintypes.LPARAM]
+          user32.EnumWindows.restype = wintypes.BOOL
+          user32.EnumChildWindows.argtypes = [wintypes.HWND, ENUM_WINDOWS, wintypes.LPARAM]
+          user32.EnumChildWindows.restype = wintypes.BOOL
+          user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+          user32.GetClassNameW.restype = ctypes.c_int
+          user32.GetDlgCtrlID.argtypes = [wintypes.HWND]
+          user32.GetDlgCtrlID.restype = ctypes.c_int
+          user32.IsWindowEnabled.argtypes = [wintypes.HWND]
+          user32.IsWindowEnabled.restype = wintypes.BOOL
+          user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+          user32.SendMessageW.restype = wintypes.LRESULT
+
+          def accept_print_dialog():
+              deadline = time.monotonic() + 30
+              while time.monotonic() < deadline and not clicked.is_set():
+                  dialogs = []
+
+                  @ENUM_WINDOWS
+                  def collect(hwnd, _param):
+                      class_name = ctypes.create_unicode_buffer(64)
+                      user32.GetClassNameW(hwnd, class_name, len(class_name))
+                      if class_name.value == "#32770":
+                          dialogs.append(hwnd)
+                      return True
+
+                  user32.EnumWindows(collect, 0)
+                  for dialog in dialogs:
+                      buttons = []
+
+                      @ENUM_WINDOWS
+                      def collect_button(hwnd, _param):
+                          if user32.GetDlgCtrlID(hwnd) == 1 and user32.IsWindowEnabled(hwnd):
+                              buttons.append(hwnd)
+                          return True
+
+                      user32.EnumChildWindows(dialog, collect_button, 0)
+                      if buttons:
+                          user32.SendMessageW(buttons[0], BM_CLICK, 0, 0)
+                          clicked.set()
+                          return
+                  time.sleep(0.1)
+
+          worker = threading.Thread(target=accept_print_dialog, daemon=True)
+          worker.start()
+          payload = (
+              br"{\rtf1\ansi\deff0{\fonttbl{\f0 Arial;}}"
+              br"\paperw8391\paperh11907\margl720\margr720\margt720\margb720"
+              br"\fs24\b Domanda di iscrizione Palesya\b0\par"
+              br"Nome e cognome: Mario Rossi\par Codice fiscale: RSSMRA80A01H501U\par}"
+          )
+          outcome = native_print._print_rtf_with_windows(payload)
+          worker.join(timeout=5)
+          assert clicked.is_set(), "Il dialogo nativo di stampa non e comparso"
+          assert outcome == "printed", outcome
+          print("Windows native RTF print PASS")
+          '@
+            & "${{ steps.python-x64.outputs.python-path }}" -c $code
+            if ($LASTEXITCODE -ne 0) { throw 'Stampa RTF nativa Windows non superata.' }
+            $deadline = (Get-Date).AddSeconds(20)
+            while ((Get-Date) -lt $deadline -and -not (Test-Path $outputPath)) {
+              Start-Sleep -Milliseconds 250
+            }
+            if (-not (Test-Path $outputPath)) { throw 'Il driver Windows non ha prodotto il documento di collaudo.' }
+            if ((Get-Item $outputPath).Length -le 0) { throw 'Documento di collaudo stampa vuoto.' }
+          }
+          finally {
+            Remove-Printer -Name $printerName -ErrorAction SilentlyContinue
+            Remove-PrinterPort -Name $outputPath -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $outputPath -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Exercise real Qwen model under Windows resource guard
+        shell: pwsh
+        run: |
+          & "${{ steps.python-x64.outputs.python-path }}" -m playwright install chromium
+          if ($LASTEXITCODE -ne 0) { throw 'Browser di collaudo AI non installato.' }
+          $result = & "${{ steps.python-x64.outputs.python-path }}" -c "import os,runpy; os.environ['GITHUB_REPOSITORY']='palesya-app/palesya'; runpy.run_path(r'scripts/test_windows_ai_priority.py', run_name='__main__')" 2>&1
+          $result | Write-Host
+          if ($LASTEXITCODE -ne 0) { throw 'Modello AI reale Windows non superato.' }
+          if (($result -join "`n") -notmatch '"windows_frozen_real_model":\s*"PASS"') {
+            throw 'Il test AI non ha eseguito una conversazione reale sotto il Job Object.'
+          }
 
       - name: Verify artifact source commit
         shell: pwsh
