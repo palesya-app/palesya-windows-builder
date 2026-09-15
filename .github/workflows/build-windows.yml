@@ -161,7 +161,9 @@ jobs:
           user32.IsWindowEnabled.argtypes = [wintypes.HWND]
           user32.IsWindowEnabled.restype = wintypes.BOOL
           user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
-          user32.SendMessageW.restype = wintypes.LRESULT
+          # LRESULT is pointer-sized. Python 3.12 does not expose it from
+          # ctypes.wintypes on every Windows runner image.
+          user32.SendMessageW.restype = ctypes.c_ssize_t
 
           def accept_print_dialog():
               deadline = time.monotonic() + 30
