@@ -270,6 +270,12 @@ jobs:
           $regex = [regex]::new([regex]::Escape($needle))
           $patched = $regex.Replace($source, $replacement, 1)
           if ($patched -eq $source) { throw 'Punto di attesa backup QA non trovato.' }
+          $controlNeedle = '                    install = page.get_by_role("button", name="Installa AI locale", exact=True)'
+          $controlReplacement = '                    install = page.locator("[data-assistant-ai-install]")'
+          $controlRegex = [regex]::new([regex]::Escape($controlNeedle))
+          $controlPatched = $controlRegex.Replace($patched, $controlReplacement, 1)
+          if ($controlPatched -eq $patched) { throw 'Controllo installazione AI stabile non trovato.' }
+          $patched = $controlPatched
           [System.IO.File]::WriteAllText($qaScript, $patched, [System.Text.Encoding]::UTF8)
           & "${{ steps.python-x64.outputs.python-path }}" -m py_compile $qaScript
           if ($LASTEXITCODE -ne 0) { throw 'Script QA AI generato con sintassi non valida.' }
