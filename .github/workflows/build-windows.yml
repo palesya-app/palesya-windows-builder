@@ -128,11 +128,13 @@ jobs:
           Start-Service -Name Spooler
           $printerName = 'Palesya Native Print QA'
           $outputPath = Join-Path $env:RUNNER_TEMP 'palesya-native-registration-print.prn'
-          $driver = Get-PrinterDriver | Where-Object Name -eq 'Microsoft Print To PDF' | Select-Object -First 1
+          $driver = Get-PrinterDriver | Where-Object Name -eq 'Generic / Text Only' | Select-Object -First 1
           if (-not $driver) {
+            Add-PrinterDriver -Name 'Generic / Text Only'
             $driver = Get-PrinterDriver | Where-Object Name -eq 'Generic / Text Only' | Select-Object -First 1
           }
-          if (-not $driver) { throw 'Nessun driver di stampa Windows verificabile disponibile.' }
+          if (-not $driver) { throw 'Driver Windows non interattivo Generic / Text Only non disponibile.' }
+          Write-Host "Windows native RTF QA driver: $($driver.Name)"
           Remove-Item -LiteralPath $outputPath -Force -ErrorAction SilentlyContinue
           Add-PrinterPort -Name $outputPath
           Add-Printer -Name $printerName -DriverName $driver.Name -PortName $outputPath
