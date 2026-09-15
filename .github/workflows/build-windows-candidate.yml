@@ -258,74 +258,65 @@ jobs:
             & rundll32.exe printui.dll,PrintUIEntry /y /n $printerName
             $code = @'
           import ctypes
-          import threading
-          import time
+          import faulthandler
+          import traceback
           from ctypes import wintypes
           import native_registration_print as native_print
 
-          user32 = ctypes.WinDLL("user32", use_last_error=True)
-          ENUM_WINDOWS = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-          BM_CLICK = 0x00F5
-          clicked = threading.Event()
+          # GitHub-hosted Windows runners have no interactive desktop. Keep the
+          # production implementation untouched and make only this QA invocation
+          # select the disposable default printer without displaying PrintDlg.
+          # Microsoft documents PD_RETURNDC | PD_RETURNDEFAULT as the supported
+          # way to obtain the default printer DC for Rich Edit rendering.
+          PD_RETURNDEFAULT = 0x00000400
+          real_windll = ctypes.WinDLL
+          native_comdlg32 = real_windll("comdlg32", use_last_error=True)
+          native_print_dialog = native_comdlg32.PrintDlgW
+          native_print_dialog.argtypes = [ctypes.c_void_p]
+          native_print_dialog.restype = wintypes.BOOL
+          default_printer_requested = []
 
-          user32.EnumWindows.argtypes = [ENUM_WINDOWS, wintypes.LPARAM]
-          user32.EnumWindows.restype = wintypes.BOOL
-          user32.EnumChildWindows.argtypes = [wintypes.HWND, ENUM_WINDOWS, wintypes.LPARAM]
-          user32.EnumChildWindows.restype = wintypes.BOOL
-          user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
-          user32.GetClassNameW.restype = ctypes.c_int
-          user32.GetDlgCtrlID.argtypes = [wintypes.HWND]
-          user32.GetDlgCtrlID.restype = ctypes.c_int
-          user32.IsWindowEnabled.argtypes = [wintypes.HWND]
-          user32.IsWindowEnabled.restype = wintypes.BOOL
-          user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
-          # LRESULT is pointer-sized. Python 3.12 does not expose it from
-          # ctypes.wintypes on every Windows runner image.
-          user32.SendMessageW.restype = ctypes.c_ssize_t
+          def print_dialog_without_ui(pointer):
+              print_dialog = getattr(pointer, "_obj", None)
+              if print_dialog is None:
+                  raise RuntimeError("PRINTDLG pointer non verificabile")
+              print_dialog.Flags |= PD_RETURNDEFAULT
+              default_printer_requested.append(True)
+              return native_print_dialog(pointer)
 
-          def accept_print_dialog():
-              deadline = time.monotonic() + 30
-              while time.monotonic() < deadline and not clicked.is_set():
-                  dialogs = []
+          print_dialog_without_ui.argtypes = None
+          print_dialog_without_ui.restype = None
 
-                  @ENUM_WINDOWS
-                  def collect(hwnd, _param):
-                      class_name = ctypes.create_unicode_buffer(64)
-                      user32.GetClassNameW(hwnd, class_name, len(class_name))
-                      if class_name.value == "#32770":
-                          dialogs.append(hwnd)
-                      return True
+          class Comdlg32Proxy:
+              def __getattr__(self, name):
+                  if name == "PrintDlgW":
+                      return print_dialog_without_ui
+                  return getattr(native_comdlg32, name)
 
-                  user32.EnumWindows(collect, 0)
-                  for dialog in dialogs:
-                      buttons = []
+          def qa_windll(name, *args, **kwargs):
+              if str(name).casefold() in {"comdlg32", "comdlg32.dll"}:
+                  return Comdlg32Proxy()
+              return real_windll(name, *args, **kwargs)
 
-                      @ENUM_WINDOWS
-                      def collect_button(hwnd, _param):
-                          if user32.GetDlgCtrlID(hwnd) == 1 and user32.IsWindowEnabled(hwnd):
-                              buttons.append(hwnd)
-                          return True
-
-                      user32.EnumChildWindows(dialog, collect_button, 0)
-                      if buttons:
-                          user32.SendMessageW(buttons[0], BM_CLICK, 0, 0)
-                          clicked.set()
-                          return
-                  time.sleep(0.1)
-
-          worker = threading.Thread(target=accept_print_dialog, daemon=True)
-          worker.start()
+          faulthandler.enable()
+          ctypes.WinDLL = qa_windll
           payload = (
               br"{\rtf1\ansi\deff0{\fonttbl{\f0 Arial;}}"
               br"\paperw8391\paperh11907\margl720\margr720\margt720\margb720"
               br"\fs24\b Domanda di iscrizione Palesya\b0\par"
               br"Nome e cognome: Mario Rossi\par Codice fiscale: RSSMRA80A01H501U\par}"
           )
-          outcome = native_print._print_rtf_with_windows(payload)
-          worker.join(timeout=5)
-          assert clicked.is_set(), "Il dialogo nativo di stampa non e comparso"
+          try:
+              print("Windows native RTF print: rendering through default spooler", flush=True)
+              outcome = native_print._print_rtf_with_windows(payload)
+          except BaseException:
+              traceback.print_exc()
+              raise
+          finally:
+              ctypes.WinDLL = real_windll
+          assert default_printer_requested, "La stampante predefinita non e stata richiesta"
           assert outcome == "printed", outcome
-          print("Windows native RTF print PASS")
+          print("Windows native RTF print PASS", flush=True)
           '@
             & "${{ steps.python-x64.outputs.python-path }}" -c $code
             if ($LASTEXITCODE -ne 0) { throw 'Stampa RTF nativa Windows non superata.' }
