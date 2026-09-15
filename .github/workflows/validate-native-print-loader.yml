@@ -1,0 +1,126 @@
+name: Validate Palesya native print loader
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Tag privato immutabile da verificare"
+        required: true
+        type: string
+      expected_source_commit:
+        description: "Commit sorgente atteso"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: palesya-native-print-loader-${{ inputs.expected_source_commit }}
+  cancel-in-progress: false
+
+jobs:
+  validate-loader:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout private Palesya source
+        uses: actions/checkout@v5
+        with:
+          repository: palesya-app/palesya
+          ref: ${{ inputs.release_tag }}
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+
+      - name: Verify immutable source commit
+        shell: pwsh
+        env:
+          EXPECTED_SOURCE_COMMIT: ${{ inputs.expected_source_commit }}
+        run: |
+          $actual = (git rev-parse HEAD).Trim().ToLowerInvariant()
+          $expected = $env:EXPECTED_SOURCE_COMMIT.Trim().ToLowerInvariant()
+          if ($actual -ne $expected) {
+            throw "Commit sorgente inatteso: $actual"
+          }
+
+      - name: Set up Python x64
+        id: python-x64
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          architecture: "x64"
+
+      - name: Exercise TOM RTF loader with fail-closed timeout
+        shell: pwsh
+        run: |
+          $code = @'
+          import ctypes
+          import os
+          import threading
+          from ctypes import wintypes
+
+          import native_registration_print as native_print
+
+          def abort_hung_loader():
+              print("Windows TOM RTF loader TIMEOUT", flush=True)
+              os._exit(124)
+
+          timeout = threading.Timer(60, abort_hung_loader)
+          timeout.daemon = True
+          timeout.start()
+
+          ctypes.WinDLL("Msftedit.dll")
+          user32 = ctypes.WinDLL("user32", use_last_error=True)
+          kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+          ole32 = ctypes.WinDLL("ole32", use_last_error=True)
+          user32.CreateWindowExW.argtypes = [
+              wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
+              ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+              wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, ctypes.c_void_p,
+          ]
+          user32.CreateWindowExW.restype = wintypes.HWND
+          user32.SendMessageW.argtypes = [
+              wintypes.HWND, wintypes.UINT, ctypes.c_size_t, ctypes.c_ssize_t,
+          ]
+          user32.SendMessageW.restype = ctypes.c_ssize_t
+          user32.DestroyWindow.argtypes = [wintypes.HWND]
+          user32.DestroyWindow.restype = wintypes.BOOL
+          kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+          kernel32.GetModuleHandleW.restype = wintypes.HMODULE
+          ole32.OleInitialize.argtypes = [ctypes.c_void_p]
+          ole32.OleInitialize.restype = ctypes.c_long
+          ole32.OleUninitialize.argtypes = []
+
+          ole_result = int(ole32.OleInitialize(None))
+          hwnd = None
+          try:
+              print("Windows TOM RTF loader: CreateWindow START", flush=True)
+              hwnd = user32.CreateWindowExW(
+                  0, "RICHEDIT50W", "", 0x80000000 | 0x0004,
+                  0, 0, 1, 1, 0, 0, kernel32.GetModuleHandleW(None), None,
+              )
+              if not hwnd:
+                  raise RuntimeError("RICHEDIT50W non inizializzato")
+              print("Windows TOM RTF loader: CreateWindow PASS", flush=True)
+              payload = (
+                  br"{\rtf1\ansi\deff0{\fonttbl{\f0 Arial;}}"
+                  br"\fs24 Domanda di iscrizione Palesya\par}"
+              )
+              print("Windows TOM RTF loader: Open START", flush=True)
+              native_print._load_rtf_with_windows_tom(hwnd, payload, user32)
+              print("Windows TOM RTF loader: Open PASS", flush=True)
+              length = int(user32.SendMessageW(hwnd, 0x000E, 0, 0))
+              if length <= 0:
+                  raise RuntimeError("RTF caricato senza testo")
+              print(f"Windows TOM RTF loader PASS: text_length={length}", flush=True)
+          finally:
+              timeout.cancel()
+              if hwnd:
+                  user32.DestroyWindow(hwnd)
+              if ole_result in (0, 1):
+                  ole32.OleUninitialize()
+          '@
+          & "${{ steps.python-x64.outputs.python-path }}" -c $code
+          if ($LASTEXITCODE -ne 0) {
+            throw "Caricamento RTF TOM non superato (exit $LASTEXITCODE)."
+          }
