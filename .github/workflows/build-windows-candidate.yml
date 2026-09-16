@@ -395,6 +395,12 @@ jobs:
           $controlPatched = $controlRegex.Replace($patched, $controlReplacement, 1)
           if ($controlPatched -eq $patched) { throw 'Controllo installazione AI stabile non trovato.' }
           $patched = $controlPatched
+          $removeNeedle = '                    page.get_by_role("button", name="Rimuovi solo AI", exact=True).click()'
+          $removeReplacement = '                    page.locator("[data-assistant-ai-remove]").click()'
+          $removeRegex = [regex]::new([regex]::Escape($removeNeedle))
+          $removePatched = $removeRegex.Replace($patched, $removeReplacement, 1)
+          if ($removePatched -eq $patched) { throw 'Controllo rimozione AI stabile non trovato.' }
+          $patched = $removePatched
           $orphanNeedle = '                page.get_by_role("button", name="Rileva di nuovo", exact=True).click()'
           $orphanReplacement = @(
             '                orphan.mkdir(parents=True, exist_ok=True)'
