@@ -90,6 +90,19 @@ jobs:
           python-version: "3.12"
           architecture: "x86"
 
+      - name: Validate official native license fixtures before compilation
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+          PALESYA_NATIVE_QA_LICENSE_PACK: ${{ secrets.PALESYA_NATIVE_QA_LICENSE_PACK }}
+        run: |
+          if (Test-Path 'tests/helpers/native_official_qa.py') {
+            & "${{ steps.python-x64.outputs.python-path }}" tests/helpers/native_official_qa.py --validate
+            if ($LASTEXITCODE -ne 0) { throw 'Official native QA fixture preflight failed.' }
+          } elseif ($env:RELEASE_TAG -match '^v1\.2\.0-pilot\.(\d+)$' -and [int]$Matches[1] -ge 299) {
+            throw 'Official native QA helper missing from the closed release source.'
+          }
+
       - name: Install x86 bridge build dependency
         shell: pwsh
         run: '& "${{ steps.python-x86.outputs.python-path }}" -m pip install "pyinstaller>=6.12,<7"'
@@ -119,7 +132,14 @@ jobs:
         env:
           PALESYA_VERSION: ${{ inputs.release_tag || github.ref_name }}
           PALESYA_MAIN_PYTHON: ${{ steps.python-x64.outputs.python-path }}
-        run: .\scripts\test_windows_payload.ps1 -SkipManifest
+          PALESYA_NATIVE_QA_LICENSE_PACK: ${{ secrets.PALESYA_NATIVE_QA_LICENSE_PACK }}
+        run: |
+          if (Test-Path 'scripts\run_windows_payload_official_qa.ps1') {
+            .\scripts\run_windows_payload_official_qa.ps1 -SkipManifest
+          } else {
+            # Historical tags predate the official frozen-license trust root.
+            .\scripts\test_windows_payload.ps1 -SkipManifest
+          }
 
       - name: Exercise native RTF printing on disposable Windows printer
         shell: pwsh
@@ -251,6 +271,8 @@ jobs:
 
       - name: Exercise real Qwen model under Windows resource guard
         shell: pwsh
+        env:
+          PALESYA_NATIVE_QA_LICENSE_PACK: ${{ secrets.PALESYA_NATIVE_QA_LICENSE_PACK }}
         run: |
           & "${{ steps.python-x64.outputs.python-path }}" -m playwright install chromium
           if ($LASTEXITCODE -ne 0) { throw 'Browser di collaudo AI non installato.' }
@@ -296,7 +318,11 @@ jobs:
           & "${{ steps.python-x64.outputs.python-path }}" -m py_compile $qaScript
           if ($LASTEXITCODE -ne 0) { throw 'Script QA AI generato con sintassi non valida.' }
           try {
-            $result = & "${{ steps.python-x64.outputs.python-path }}" -c "import os,runpy; os.environ['GITHUB_REPOSITORY']='palesya-app/palesya'; runpy.run_path(r'$qaScript', run_name='__main__')" 2>&1
+            if (Test-Path 'tests/helpers/native_official_qa.py') {
+              $result = & "${{ steps.python-x64.outputs.python-path }}" -c "import os,runpy,sys; os.environ['GITHUB_REPOSITORY']='palesya-app/palesya'; sys.argv=['tests/helpers/native_official_qa.py','--script',r'$qaScript']; runpy.run_path('tests/helpers/native_official_qa.py',run_name='__main__')" 2>&1
+            } else {
+              $result = & "${{ steps.python-x64.outputs.python-path }}" -c "import os,runpy; os.environ['GITHUB_REPOSITORY']='palesya-app/palesya'; runpy.run_path(r'$qaScript', run_name='__main__')" 2>&1
+            }
             $testExitCode = $LASTEXITCODE
           }
           finally {
