@@ -1,0 +1,27 @@
+name: Builder QA contracts
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/build-windows.yml
+      - .github/workflows/builder-qa-contracts.yml
+      - tests/test_native_ai_startup_wait.py
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/build-windows.yml
+      - .github/workflows/builder-qa-contracts.yml
+      - tests/test_native_ai_startup_wait.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  startup-wait-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - name: Preserve bounded startup wait and mandatory native gates
+        run: python3 -m unittest discover -s tests -p test_native_ai_startup_wait.py -v

@@ -283,7 +283,11 @@ jobs:
             '            initial_state = state()'
             '            initial_deadline = time.monotonic() + 330'
             '            while initial_state["eligibility_code"] == "BUSY":'
-            '                assert set(initial_state.get("blockers") or []) == {"backup"}, initial_state'
+            # A licensed cold start may briefly run both the backup and the
+            # signed update check. Wait for those owners to finish; never
+            # bypass the product guard or accept an unknown priority operation.
+            '                blockers = set(initial_state.get("blockers") or [])'
+            '                assert blockers and blockers <= {"backup", "update"}, initial_state'
             '                assert time.monotonic() < initial_deadline, initial_state'
             '                time.sleep(1)'
             '                initial_state = state()'
