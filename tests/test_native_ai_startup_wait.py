@@ -25,6 +25,42 @@ def startup_wait_source():
     return textwrap.dedent('\n'.join(lines))
 
 
+def controlled_backup_source():
+    workflow = WORKFLOW.read_text(encoding='utf-8')
+    marker = '$backupReplacement = @('
+    if marker not in workflow:
+        # Reproduce the historical, copy-only expectation before the fix.
+        return ('expect(page.locator("[data-assistant-ai-message]"))'
+                '.to_contain_text("backup dei dati")')
+    block = workflow.split(marker, 1)[1].split(
+        ') -join [Environment]::NewLine', 1)[0]
+    return textwrap.dedent('\n'.join(
+        ast.literal_eval(raw.strip()) for raw in block.splitlines()
+        if raw.strip() and not raw.strip().startswith('#')
+    ))
+
+
+def execute_backup_check(status, message, source=None):
+    seen = []
+
+    class Page:
+        def locator(self, selector):
+            if selector != '[data-assistant-ai-message]':
+                raise AssertionError('Backup check lost its real UI locator')
+            return selector
+
+    class Expectation:
+        def to_contain_text(self, expected):
+            seen.append(expected)
+            if expected not in message:
+                raise AssertionError('Unexpected backup UI message')
+
+    namespace = {'state': lambda: status, 'page': Page(),
+                 'expect': lambda _locator: Expectation()}
+    exec(compile(source or controlled_backup_source(), '<builder-backup-check>', 'exec'), namespace)
+    return seen
+
+
 def execute_wait(states, source=None):
     class Clock:
         elapsed = 0
@@ -109,6 +145,58 @@ class NativeAiStartupWaitTests(unittest.TestCase):
         self.assertIn('Exercise real Qwen model under Windows resource guard', workflow)
         self.assertIn('Exercise native RTF printing on disposable Windows printer', workflow)
         self.assertIn('Smoke test installer and installed application', workflow)
+
+
+class NativeAiControlledBackupTests(unittest.TestCase):
+    @staticmethod
+    def status(*, code='BUSY', eligible=False, blockers=('backup',), lifecycle=''):
+        return {'eligibility_code': code, 'eligible': eligible,
+                'blockers': list(blockers),
+                'lifecycle': {'lifecycle_status': lifecycle}}
+
+    def test_normal_backup_keeps_specific_message_check(self):
+        self.assertEqual(execute_backup_check(self.status(), 'AI in attesa: backup dei dati'),
+                         ['backup dei dati'])
+
+    def test_observed_active_deferred_copy_requires_real_backup_state(self):
+        self.assertEqual(execute_backup_check(
+            self.status(lifecycle='ACTIVE_DEFERRED'),
+            'Installazione automatica rinviata: Palesya riprovera senza interrompere il lavoro della reception'),
+            ['Installazione automatica rinviata'])
+
+    def test_ready_or_eligible_state_never_passes_the_backup_check(self):
+        for status in (self.status(code='ELIGIBLE'), self.status(eligible=True)):
+            with self.subTest(status=status), self.assertRaises(AssertionError):
+                execute_backup_check(status, 'AI in attesa: backup dei dati')
+
+    def test_missing_backup_owner_never_passes_the_backup_check(self):
+        for blockers in ((), ('restore',), ('update',)):
+            with self.subTest(blockers=blockers), self.assertRaises(AssertionError):
+                execute_backup_check(self.status(blockers=blockers), 'AI in attesa: backup dei dati')
+
+    def test_deferred_message_is_not_accepted_for_other_lifecycle_states(self):
+        with self.assertRaises(AssertionError):
+            execute_backup_check(self.status(lifecycle='ACTIVE_READY'), 'Installazione automatica rinviata')
+
+    def test_unknown_message_still_fails_even_for_deferred_backup(self):
+        with self.assertRaises(AssertionError):
+            execute_backup_check(self.status(lifecycle='ACTIVE_DEFERRED'), 'Something unexpected')
+
+    def test_removing_the_structured_guard_is_detected(self):
+        source = controlled_backup_source()
+        cases = (
+            ('assert backup_state["eligibility_code"] == "BUSY", backup_state', self.status(code='ELIGIBLE')),
+            ('assert backup_state["eligible"] is False, backup_state', self.status(eligible=True)),
+            ('assert "backup" in backup_state.get("blockers", []), backup_state', self.status(blockers=('restore',))),
+        )
+        for guard, status in cases:
+            with self.subTest(guard=guard):
+                self.assertIn(guard, source)
+                with self.assertRaises(AssertionError):
+                    execute_backup_check(status, 'AI in attesa: backup dei dati', source=source)
+                mutated = source.replace(guard, 'pass', 1)
+                self.assertEqual(execute_backup_check(status, 'AI in attesa: backup dei dati', source=mutated),
+                                 ['backup dei dati'])
 
 
 if __name__ == '__main__':
