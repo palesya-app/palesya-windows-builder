@@ -296,6 +296,24 @@ jobs:
           $regex = [regex]::new([regex]::Escape($needle))
           $patched = $regex.Replace($source, $replacement, 1)
           if ($patched -eq $source) { throw 'Punto di attesa backup QA non trovato.' }
+          # Active can publish its automatic-install deferred copy. Verify the
+          # live backup owner and ineligibility before accepting that known copy.
+          # The original HTTP 409 / AI_BUSY, refusal notice, file-isolation and
+          # real model/Job Object checks remain mandatory and unmodified.
+          $backupNeedle = '                    expect(page.locator("[data-assistant-ai-message]")).to_contain_text("backup dei dati")'
+          $backupReplacement = @(
+            '                    backup_state = state()'
+            '                    assert backup_state["eligibility_code"] == "BUSY", backup_state'
+            '                    assert backup_state["eligible"] is False, backup_state'
+            '                    assert "backup" in backup_state.get("blockers", []), backup_state'
+            '                    if backup_state.get("lifecycle", {}).get("lifecycle_status") == "ACTIVE_DEFERRED":'
+            '                        expect(page.locator("[data-assistant-ai-message]")).to_contain_text("Installazione automatica rinviata")'
+            '                    else:'
+            '                        expect(page.locator("[data-assistant-ai-message]")).to_contain_text("backup dei dati")'
+          ) -join [Environment]::NewLine
+          $backupRegex = [regex]::new([regex]::Escape($backupNeedle))
+          if ($backupRegex.Matches($patched).Count -ne 1) { throw 'Contratto UI backup QA assente o ambiguo.' }
+          $patched = $backupRegex.Replace($patched, $backupReplacement, 1)
           $controlNeedle = '                    install = page.get_by_role("button", name="Installa AI locale", exact=True)'
           $controlReplacement = '                    install = page.locator("[data-assistant-ai-install]")'
           $controlRegex = [regex]::new([regex]::Escape($controlNeedle))
