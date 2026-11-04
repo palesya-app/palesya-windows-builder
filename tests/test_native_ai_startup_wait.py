@@ -199,5 +199,21 @@ class NativeAiControlledBackupTests(unittest.TestCase):
                                  ['backup dei dati'])
 
 
+class ImmutableCheckoutBytesTests(unittest.TestCase):
+    def test_raw_json_restore_precedes_release_validation(self):
+        workflow = WORKFLOW.read_text(encoding='utf-8')
+        marker = '- name: Preserve immutable JSON bytes across Windows checkout'
+        self.assertTrue(marker in workflow, 'Immutable JSON restoration is missing')
+        restoration = workflow.index(marker)
+        validation = workflow.index('- name: Verify closed release train')
+        self.assertLess(restoration, validation)
+        source = workflow[restoration:validation]
+        self.assertIn("['git', 'archive', '--format=zip', 'HEAD', '--', '*.json']", source)
+        self.assertIn('target.is_symlink() or not target.is_file()', source)
+        self.assertIn('target.write_bytes(raw)', source)
+        self.assertIn('target.read_bytes() != raw', source)
+        self.assertIn("raise SystemExit('Immutable JSON byte readback mismatch')", source)
+
+
 if __name__ == '__main__':
     unittest.main()

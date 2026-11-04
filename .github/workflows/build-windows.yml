@@ -47,13 +47,42 @@ jobs:
           architecture: "x64"
           cache: pip
 
-      - name: Preserve release contract bytes across Windows checkout
+      - name: Preserve immutable JSON bytes across Windows checkout
         shell: pwsh
         run: |
-          # Read the immutable blob directly from Git and write its raw bytes.
-          # This avoids CRLF working-tree conversion without weakening the hash.
-          & "${{ steps.python-x64.outputs.python-path }}" -c "import pathlib, subprocess; pathlib.Path(r'release-train/regression-contract.json').write_bytes(subprocess.check_output(['git', 'show', 'HEAD:release-train/regression-contract.json']))"
-          if ($LASTEXITCODE -ne 0) { throw 'Ripristino byte contratto non riuscito' }
+          # Restore only tracked JSON records from immutable Git blobs.
+          # Leave Windows scripts, native tests and expected hashes unchanged.
+          $restore = @'
+          import io
+          import pathlib
+          import stat
+          import subprocess
+          import zipfile
+
+          root = pathlib.Path.cwd().resolve()
+          archive = zipfile.ZipFile(io.BytesIO(subprocess.check_output(
+              ['git', 'archive', '--format=zip', 'HEAD', '--', '*.json'])))
+          count = 0
+          for entry in archive.infolist():
+              if entry.is_dir():
+                  continue
+              if not entry.filename.endswith('.json') or stat.S_ISLNK(entry.external_attr >> 16):
+                  raise SystemExit('Unexpected immutable JSON archive entry')
+              target = root / entry.filename
+              target.resolve().relative_to(root)
+              if target.is_symlink() or not target.is_file():
+                  raise SystemExit('Immutable JSON target is missing or not regular')
+              raw = archive.read(entry)
+              target.write_bytes(raw)
+              if target.read_bytes() != raw:
+                  raise SystemExit('Immutable JSON byte readback mismatch')
+              count += 1
+          if not count:
+              raise SystemExit('No immutable JSON records restored')
+          print('Immutable JSON records restored byte-exactly from Git:', count)
+          '@
+          & "${{ steps.python-x64.outputs.python-path }}" -c $restore
+          if ($LASTEXITCODE -ne 0) { throw 'Immutable JSON byte restoration failed' }
           Get-FileHash release-train\regression-contract.json -Algorithm SHA256
 
       - name: Verify closed release train
