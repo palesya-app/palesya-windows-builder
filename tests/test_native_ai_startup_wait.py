@@ -208,11 +208,20 @@ class ImmutableCheckoutBytesTests(unittest.TestCase):
         validation = workflow.index('- name: Verify closed release train')
         self.assertLess(restoration, validation)
         source = workflow[restoration:validation]
-        self.assertIn("['git', 'archive', '--format=zip', 'HEAD', '--', '*.json']", source)
+        self.assertIn("['git', '-c', 'core.autocrlf=false', '-c', 'core.eol=lf',", source)
+        self.assertIn("'archive', '--format=zip', 'HEAD', '--', '*.json']", source)
         self.assertIn('target.is_symlink() or not target.is_file()', source)
         self.assertIn('target.write_bytes(raw)', source)
         self.assertIn('target.read_bytes() != raw', source)
         self.assertIn("raise SystemExit('Immutable JSON byte readback mismatch')", source)
+
+    def test_archive_conversion_is_disabled_only_for_this_invocation(self):
+        workflow = WORKFLOW.read_text(encoding='utf-8')
+        source = workflow.split('- name: Preserve immutable JSON bytes across Windows checkout', 1)[1].split('- name: Verify closed release train', 1)[0]
+        self.assertIn("'core.autocrlf=false'", source)
+        self.assertIn("'core.eol=lf'", source)
+        self.assertNotIn('config --global', source)
+        self.assertNotIn('git config', source)
 
 
 if __name__ == '__main__':

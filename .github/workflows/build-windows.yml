@@ -61,7 +61,8 @@ jobs:
 
           root = pathlib.Path.cwd().resolve()
           archive = zipfile.ZipFile(io.BytesIO(subprocess.check_output(
-              ['git', 'archive', '--format=zip', 'HEAD', '--', '*.json'])))
+              ['git', '-c', 'core.autocrlf=false', '-c', 'core.eol=lf',
+               'archive', '--format=zip', 'HEAD', '--', '*.json'])))
           count = 0
           for entry in archive.infolist():
               if entry.is_dir():
